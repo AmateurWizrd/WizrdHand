@@ -57,6 +57,7 @@ def capture_desktop_state(
     display: list[int] | None,
     region: list[int] | None,
     tool_name: str,
+    window: int | None = None,
 ):
     profile_enabled = _snapshot_profile_enabled()
     profile_started_at = time.perf_counter()
@@ -85,6 +86,7 @@ def capture_desktop_state(
         display_indices=display_indices,
         region=region,
         max_image_size=Size(width=MAX_IMAGE_WIDTH, height=MAX_IMAGE_HEIGHT),
+        window=window,
     )
     if profile_enabled:
         desktop_state_ms = (time.perf_counter() - stage_started_at) * 1000
@@ -134,6 +136,7 @@ def capture_desktop_state(
         "all_desktops": all_desktops,
         "screenshot_bytes": screenshot_bytes,
         "use_ui_tree": use_ui_tree,
+        "window": window,
     }
 
 
@@ -206,6 +209,14 @@ def build_snapshot_response(
     if desktop_state.screenshot_region:
         metadata_text += f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
         metadata_text += "Coordinate Space: Virtual desktop coordinates\n"
+        if capture_result.get("window") is not None:
+            box = desktop_state.screenshot_region
+            metadata_text += (
+                f"Window Client Area: handle {capture_result['window']}, origin "
+                f"({box.left},{box.top}), size {box.width}x{box.height}. Image pixel (px, py) "
+                f"is screen point ({box.left} + px, {box.top} + py) before any coordinate "
+                "scale above\n"
+            )
         if include_ui_details and capture_result["use_ui_tree"]:
             metadata_text += (
                 "UI Tree Scope: Region-filtered. Windows and UI elements outside this region "

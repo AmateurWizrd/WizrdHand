@@ -853,20 +853,22 @@ class Desktop:
         """
         clear = as_bool(clear, "clear")
         press_enter = as_bool(press_enter, "press_enter")
-        if scancode:
-            for ch in text:
-                if ch != "\r":
-                    scancode_input.char_keys(ch)  # Reject untypable text before clicking.
         owner = get_controller()
         owner.checkpoint_current()
         x, y = loc
         self._validate_screen_point(x, y)
+        if scancode:
+            # Resolve every key with the clicked window's layout before clicking, so
+            # untypable text fails first and the whole operation uses one layout.
+            layout = scancode_input.layout_at(x, y)
+            plan = scancode_input.plan_text(text, layout)
         uia.Click(x, y)
         owner.record_step_current()
 
         def press(key: str) -> None:
             if scancode:
-                scancode_input.press_chord([scancode_input.vk_for_name(key)])
+                vk = scancode_input.vk_for_name(key, layout)
+                scancode_input.press_chord([scancode_input.resolve(vk, layout)])
                 return
             owner.checkpoint_current()
             uia.SendKeys("{" + key + "}", waitTime=0.05)
@@ -886,7 +888,7 @@ class Desktop:
         # clipboard paste for long text (so the scan-code queue can't race).
         has_control_chars = any(c in text for c in ("\n", "\t", "{", "}"))
         if scancode:
-            scancode_input.type_text(text)  # Games don't paste; every key is a checkpoint.
+            scancode_input.type_text(plan)  # Games don't paste; every key is a checkpoint.
         elif len(text) >= self._LONG_TEXT_PASTE_THRESHOLD and not has_control_chars:
             self._paste_text(text)
         else:
@@ -1249,8 +1251,10 @@ class Desktop:
     def shortcut(self, shortcut: str, scancode: bool = False, hold: float | None = None):
         """Press a key chord; scancode sends hardware scan codes and allows a hold in seconds."""
         if scancode:
-            vks = [scancode_input.vk_for_name(name) for name in _shortcut_keys(shortcut)]
-            scancode_input.press_chord(vks, hold or 0.0)
+            layout = scancode_input.foreground_layout()
+            names = _shortcut_keys(shortcut)
+            keys = [scancode_input.resolve(scancode_input.vk_for_name(n, layout), layout) for n in names]
+            scancode_input.press_chord(keys, hold or 0.0)
             return
         if hold is not None:
             raise ValueError("hold requires scancode=True")

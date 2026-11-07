@@ -111,6 +111,8 @@ class ControlCoordinator:
         self._pressed: set[int] = set()
         self._mouse_down: set[int] = set()
         self._delivered_keys: set[int] = set()
+        # Delivered physical downs by (scan code, extended) -> vk: the exact physical key.
+        self._delivered_scans: dict[tuple[int, bool], int] = {}
         self._delivered_mouse: set[int] = set()
         self._quarantine: set[int] = set()
         self._mouse_hook = None
@@ -428,6 +430,10 @@ class ControlCoordinator:
         }
         return any(key in self._delivered_keys for key in aliases.get(normalized, (vk,)))
 
+    def physical_scan_down(self, scan: int, extended: bool) -> bool:
+        """Whether a delivered physical down of this exact key (side included) is held."""
+        return (scan, extended) in self._delivered_scans
+
     def physical_mouse_down(self, button: str) -> bool:
         return {"left": 1, "right": 2, "middle": 3}[button] in self._delivered_mouse
 
@@ -510,6 +516,7 @@ class ControlCoordinator:
         self._pressed.clear()
         self._mouse_down.clear()
         self._delivered_keys.clear()
+        self._delivered_scans.clear()
         self._delivered_mouse.clear()
         self._quarantine.clear()
         self._thread = self._watchdog = None

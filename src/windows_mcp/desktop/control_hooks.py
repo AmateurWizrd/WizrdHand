@@ -115,11 +115,14 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
         owner._fail_open()
     result = _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
     if vk is not None and not mode_switch:
+        scan_id = (int(data.scanCode), bool(data.flags & 0x01))  # LLKHF_EXTENDED
         if down:
             if not result:  # Forwarding alone is not proof of delivery.
                 owner._delivered_keys.add(vk)
+                owner._delivered_scans[scan_id] = vk
         else:
             owner._delivered_keys.discard(vk)
+            owner._delivered_scans.pop(scan_id, None)
     return result
 
 

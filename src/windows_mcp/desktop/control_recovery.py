@@ -92,6 +92,9 @@ class StaleInputRecovery:
             owner._pressed.difference_update(keys)
             owner._mouse_down.difference_update(buttons)
             owner._delivered_keys.difference_update(keys)
+            for scan_id, vk in list(owner._delivered_scans.items()):
+                if vk in keys:
+                    owner._delivered_scans.pop(scan_id, None)
             owner._delivered_mouse.difference_update(buttons)
             owner._quarantine.difference_update(keys)
             self._reset()

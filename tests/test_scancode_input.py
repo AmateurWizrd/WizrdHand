@@ -5,74 +5,98 @@ scancode=True sends KEYEVENTF_SCANCODE input instead. SendInput is mocked
 everywhere: no test here sends real input.
 """
 
+import asyncio
+import ctypes
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from windows_mcp.desktop import scancode
-from windows_mcp.desktop import service
-from windows_mcp.desktop.control_ledger import InputLedger
+from windows_mcp.desktop import control, scancode, service
 from windows_mcp.desktop.service import Desktop
 from windows_mcp.uia import KeyboardEventFlag
 
 SCANCODE = KeyboardEventFlag.KeyScanCode
 EXTENDED = KeyboardEventFlag.ExtendedKey
 KEYUP = KeyboardEventFlag.KeyUp
+US, FR = 0x0409, 0x040C
 
-# A US layout: virtual key -> scan code, and character -> VkKeyScanW result.
-_SCANS = {0x10: 0x2A, 0x11: 0x1D, 0x12: 0x38, 0x0D: 0x1C, 0x25: 0x4B, 0x24: 0x47, 0x41: 0x1E}
-_SCANS |= {0x31: 0x02, 0xA3: 0x1D, 0x2E: 0x53}
-_CHARS = {"a": 0x41, "A": 0x141, "1": 0x31, "!": 0x131, "\t": 0x09}
+# MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC_EX): 0xE0 in the high byte marks an extended key.
+_US_SCANS = {0x10: 0x2A, 0x11: 0x1D, 0x12: 0x38, 0x0D: 0x1C, 0x25: 0xE04B, 0x24: 0xE047}
+_US_SCANS |= {0x41: 0x1E, 0x51: 0x10, 0x31: 0x02, 0xA2: 0x1D, 0xA3: 0xE01D, 0x2E: 0xE053}
+_US_SCANS |= {0x45: 0x12, 0x32: 0x03}
+_US_SCANS |= {0xAD: 0xE020, 0x13: 0xE11D}  # Volume Mute, Pause (E1: no usable encoding).
+_FR_SCANS = _US_SCANS | {0x41: 0x10, 0x51: 0x1E}  # AZERTY swaps A and Q.
+_US_CHARS = {"a": 0x41, "A": 0x141, "q": 0x51, "1": 0x31, "!": 0x131, "\t": 0x09, "€": 0x645}
+_FR_CHARS = _US_CHARS | {"1": 0x131, "!": -1, "é": 0x32}
 
 
 class FakeUser32:
-    @staticmethod
-    def MapVirtualKeyW(vk: int, map_type: int) -> int:
-        assert map_type == 0
-        return _SCANS.get(vk, 0)
+    def __init__(self) -> None:
+        self.caps_lock = False
+        self.map_threads: list[str] = []
 
-    @staticmethod
-    def VkKeyScanW(ch: str) -> int:
-        return _CHARS.get(ch, -1)
+    def MapVirtualKeyExW(self, vk: int, map_type: int, layout: int) -> int:
+        assert map_type == 4
+        self.map_threads.append(threading.current_thread().name)
+        return (_FR_SCANS if layout == FR else _US_SCANS).get(vk, 0)
+
+    def VkKeyScanExW(self, ch: str, layout: int) -> int:
+        return (_FR_CHARS if layout == FR else _US_CHARS).get(ch, -1)
+
+    def GetKeyState(self, vk: int) -> int:
+        assert vk == 0x14
+        return int(self.caps_lock)
 
 
 class Recorder:
-    """Stands in for uia.SendInput and keeps (scan, flags, vk, type) per event."""
+    """Stands in for uia.SendInput and keeps (scan, flags) per event."""
 
     def __init__(self) -> None:
         self.events: list[tuple[int, int]] = []
         self.raw: list[object] = []
+        self.fail: set[int] = set()  # Event numbers (1-based) that SendInput rejects.
 
     def __call__(self, *inputs) -> int:
-        for item in inputs:
-            self.raw.append(item)
-            self.events.append((item.union.ki.wScan, item.union.ki.dwFlags))
+        item = inputs[0]
+        if len(self.raw) + 1 in self.fail:
+            self.raw.append(None)
+            return 0
+        self.raw.append(item)
+        self.events.append((item.union.ki.wScan, item.union.ki.dwFlags))
         return len(inputs)
 
 
 @pytest.fixture
-def owner():
-    return SimpleNamespace(
-        input_ledger=InputLedger(),
-        checkpoint_current=MagicMock(),
-        record_step_current=MagicMock(),
-        physical_key_down=MagicMock(return_value=False),
-    )
+def user32(monkeypatch) -> FakeUser32:
+    fake = FakeUser32()
+    monkeypatch.setattr(scancode, "_user32", fake)
+    return fake
 
 
 @pytest.fixture
-def sent(monkeypatch, owner) -> Recorder:
+def owner(monkeypatch) -> control.ControlCoordinator:
+    """A real coordinator and ledger; no hook thread, so checkpoints are no-ops."""
+    coordinator = control.ControlCoordinator()
+    monkeypatch.setattr(scancode, "get_controller", lambda: coordinator)
+    return coordinator
+
+
+@pytest.fixture
+def sent(monkeypatch, user32, owner) -> Recorder:
     recorder = Recorder()
-    monkeypatch.setattr(scancode, "_user32", FakeUser32)
     monkeypatch.setattr(scancode.uia, "SendInput", recorder)
-    monkeypatch.setattr(scancode, "get_controller", lambda: owner)
     monkeypatch.setattr(scancode.time, "sleep", lambda seconds: None)
     return recorder
 
 
+def keys(*vks, layout=US):
+    return [scancode.resolve(vk, layout) for vk in vks]
+
+
 def test_chord_sends_scan_codes_with_extended_flag_and_reverse_release(sent, owner):
-    scancode.press_chord([0x11, 0x25])  # Ctrl+Left
+    scancode.press_chord(keys(0x11, 0x25))  # Ctrl+Left
 
     assert sent.events == [
         (0x1D, SCANCODE),
@@ -86,22 +110,29 @@ def test_chord_sends_scan_codes_with_extended_flag_and_reverse_release(sent, own
     assert owner.input_ledger.pending() == ()
 
 
-@pytest.mark.parametrize("vk", [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E])
-def test_navigation_keys_are_extended(vk):
-    assert vk in scancode.EXTENDED_VKS
+def test_extended_flag_comes_from_the_layout_mapping(user32):
+    assert scancode.resolve(0xA3, US) == scancode.Key(0xA3, 0x1D, True)  # Right Ctrl
+    assert scancode.resolve(0xA2, US) == scancode.Key(0xA2, 0x1D, False)  # Left Ctrl
+    assert scancode.resolve(0xAD, US) == scancode.Key(0xAD, 0x20, True)  # Mute, not D
+    assert scancode.resolve(0x2E, US).extended  # Delete
+    assert not scancode.resolve(0x41, US).extended
 
 
-@pytest.mark.parametrize("vk", [0xA3, 0xA5])
-def test_right_ctrl_and_alt_are_extended(vk):
-    assert vk in scancode.EXTENDED_VKS
+@pytest.mark.parametrize("vk", [0x13, 0xFE])  # Pause (E1 prefix), unmapped
+def test_key_without_usable_encoding_is_rejected(user32, vk):
+    with pytest.raises(ValueError, match="no scan code"):
+        scancode.resolve(vk, US)
 
 
-def test_left_modifiers_and_letters_are_not_extended():
-    assert not {0x10, 0x11, 0x12, 0xA0, 0xA2, 0xA4, 0x41} & scancode.EXTENDED_VKS
+def test_shortcut_with_unencodable_key_sends_nothing(sent, owner, monkeypatch):
+    desktop, _ = _desktop(monkeypatch, owner)
+    with pytest.raises(ValueError, match="no scan code"):
+        desktop.shortcut("ctrl+Pause", scancode=True)
+    assert sent.events == []
 
 
 def test_typing_holds_shift_for_shifted_characters(sent):
-    scancode.type_text("aA!")
+    scancode.type_text(scancode.plan_text("aA!", US))
 
     assert sent.events == [
         (0x1E, SCANCODE),
@@ -117,17 +148,43 @@ def test_typing_holds_shift_for_shifted_characters(sent):
     ]
 
 
+def test_caps_lock_inverts_shift_for_letters_only(sent, user32):
+    user32.caps_lock = True
+    scancode.type_text(scancode.plan_text("aA!", US))
+
+    assert sent.events == [
+        (0x2A, SCANCODE),  # "a" with Caps Lock on needs Shift.
+        (0x1E, SCANCODE),
+        (0x1E, SCANCODE | KEYUP),
+        (0x2A, SCANCODE | KEYUP),
+        (0x1E, SCANCODE),  # "A" needs no Shift.
+        (0x1E, SCANCODE | KEYUP),
+        (0x2A, SCANCODE),  # "!" is not a letter: Shift as usual.
+        (0x02, SCANCODE),
+        (0x02, SCANCODE | KEYUP),
+        (0x2A, SCANCODE | KEYUP),
+    ]
+
+
+def test_altgr_characters_hold_ctrl_and_alt(user32):
+    assert scancode.char_chord("€", US) == keys(0x11, 0x12, 0x45)
+
+
+def test_typing_uses_the_target_layout(sent):
+    scancode.type_text(scancode.plan_text("a", FR))
+    assert sent.events == [(0x10, SCANCODE), (0x10, SCANCODE | KEYUP)]  # AZERTY "a" key
+
+
+def test_text_is_checked_against_the_target_layout(user32):
+    assert scancode.plan_text("é", FR)
+    with pytest.raises(ValueError, match="no key"):
+        scancode.plan_text("é", US)
+
+
 def test_newline_types_enter_and_carriage_return_is_skipped(sent):
-    scancode.type_text("\r\n")
+    scancode.type_text(scancode.plan_text("\r\n", US))
 
     assert sent.events == [(0x1C, SCANCODE), (0x1C, SCANCODE | KEYUP)]
-
-
-def test_untypable_text_sends_nothing(sent):
-    with pytest.raises(ValueError, match="no key"):
-        scancode.type_text("a\u00e9")
-
-    assert sent.events == []
 
 
 def test_every_down_is_held_in_the_ledger_until_its_up(sent, owner, monkeypatch):
@@ -138,14 +195,14 @@ def test_every_down_is_held_in_the_ledger_until_its_up(sent, owner, monkeypatch)
         return sent(*inputs)
 
     monkeypatch.setattr(scancode.uia, "SendInput", spy)
-    scancode.press_chord([0x10, 0x41])
+    scancode.press_chord(keys(0x10, 0x41))
 
     # The ledger records each down before injecting it, and drops it after the up.
     assert pending_during_sends == [
-        ("key:scan:0x10",),
-        ("key:scan:0x10", "key:scan:0x41"),
-        ("key:scan:0x10", "key:scan:0x41"),
-        ("key:scan:0x10",),
+        ("key:scan:2a",),
+        ("key:scan:2a", "key:scan:1e"),
+        ("key:scan:2a", "key:scan:1e"),
+        ("key:scan:2a",),
     ]
     assert owner.input_ledger.pending() == ()
 
@@ -154,72 +211,117 @@ class Preempted(Exception):
     pass
 
 
-def test_takeover_during_hold_releases_each_key_once(sent, owner, monkeypatch):
+def _takeover_during_hold(owner, monkeypatch, before_release=lambda: None, thread=False):
+    """Make the first hold tick act like a takeover: block input, release all, preempt."""
     clock = iter(range(100))
     monkeypatch.setattr(scancode.time, "monotonic", lambda: next(clock) * 0.1)
-    calls = 0
 
     def checkpoint():
-        nonlocal calls
-        calls += 1
-        if calls == 4:  # Two key downs, one hold tick, then the user takes over.
-            owner.input_ledger.block_new()
-            owner.input_ledger.release_all()  # What the coordinator's watchdog does.
-            raise Preempted
+        if not owner.input_ledger.pending():  # Single-key tests: fire on the first hold tick.
+            return
+        owner.input_ledger.block_new()
+        before_release()
+        if thread:  # The watchdog releases from its own thread.
+            worker = threading.Thread(target=owner.input_ledger.release_all, name="watchdog")
+            worker.start()
+            worker.join()
+        else:
+            owner.input_ledger.release_all()
+        raise Preempted
 
-    owner.checkpoint_current.side_effect = checkpoint
+    monkeypatch.setattr(owner, "checkpoint_current", checkpoint)
+
+
+def test_takeover_releases_with_the_scan_code_used_for_the_down(sent, owner, user32, monkeypatch):
+    """The watchdog thread may have another layout; the up must not be re-mapped there."""
+    _takeover_during_hold(owner, monkeypatch, thread=True)
     with pytest.raises(Preempted):
-        scancode.press_chord([0x11, 0x41], hold=5.0)
+        scancode.press_chord(keys(0x41, layout=FR), hold=5.0)
 
-    ups = [event for event in sent.events if event[1] & KEYUP]
-    assert sorted(ups) == [(0x1D, SCANCODE | KEYUP), (0x1E, SCANCODE | KEYUP)]
+    assert sent.events == [(0x10, SCANCODE), (0x10, SCANCODE | KEYUP)]
+    assert "watchdog" not in user32.map_threads
     assert owner.input_ledger.pending() == ()
 
 
-def test_physically_held_key_is_not_released_by_the_ai(sent, owner):
-    owner.physical_key_down.side_effect = lambda vk: vk == 0x41
-    scancode.press_chord([0x41])
+def _physical_down(owner, monkeypatch, scan, extended, vk):
+    monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 0)  # Delivered.
+    event = control._KeyHookData()
+    event.vkCode, event.scanCode, event.flags = vk, scan, int(extended)
+    owner._physical_key(0, 0x100, ctypes.addressof(event))
 
-    assert sent.events == [(0x1E, SCANCODE)]  # The user's own up will clear it.
+
+def test_physical_left_ctrl_does_not_cancel_injected_right_ctrl_release(sent, owner, monkeypatch):
+    _takeover_during_hold(
+        owner,
+        monkeypatch,
+        before_release=lambda: _physical_down(owner, monkeypatch, 0x1D, False, 0xA2),
+    )
+    with pytest.raises(Preempted):
+        scancode.press_chord(keys(0xA3), hold=5.0)
+
+    assert sent.events == [(0x1D, SCANCODE | EXTENDED), (0x1D, SCANCODE | EXTENDED | KEYUP)]
+    assert owner.input_ledger.pending() == ()
+
+
+def test_physical_down_of_the_same_key_takes_over_its_release(sent, owner, monkeypatch):
+    _takeover_during_hold(
+        owner,
+        monkeypatch,
+        before_release=lambda: _physical_down(owner, monkeypatch, 0x1D, True, 0xA3),
+    )
+    with pytest.raises(Preempted):
+        scancode.press_chord(keys(0xA3), hold=5.0)
+
+    assert sent.events == [(0x1D, SCANCODE | EXTENDED)]  # The user's own up will clear it.
+    assert owner.input_ledger.pending() == ()
+
+
+def test_partial_chord_failure_releases_the_keys_already_down(sent, owner):
+    sent.fail = {2}  # Ctrl goes down, then SendInput rejects A's down.
+    with pytest.raises(OSError, match="blocked"):
+        scancode.press_chord(keys(0x11, 0x41))
+
+    ups = [event for event in sent.events if event[1] & KEYUP]
+    assert (0x1D, SCANCODE | KEYUP) in ups
+    assert owner.input_ledger.pending() == ()
+
+
+def test_failed_up_stays_in_the_ledger_for_the_retry(sent, owner):
+    sent.fail = {2}  # The up is rejected once.
+    with pytest.raises(OSError, match="blocked"):
+        scancode.press_chord(keys(0x41))
+    assert owner.input_ledger.pending() == ("key:scan:1e",)
+
+    owner.input_ledger.release_all()  # What takeover or shutdown does.
+
+    assert sent.events == [(0x1E, SCANCODE), (0x1E, SCANCODE | KEYUP)]
     assert owner.input_ledger.pending() == ()
 
 
 def test_blocked_ledger_sends_nothing(sent, owner):
     owner.input_ledger.block_new()
     with pytest.raises(Exception, match="unavailable"):
-        scancode.press_chord([0x41])
+        scancode.press_chord(keys(0x41))
     assert sent.events == []
 
 
 @pytest.mark.parametrize("hold", [-1, 10.5, float("nan"), True])
 def test_hold_out_of_range_is_rejected(sent, hold):
     with pytest.raises(ValueError, match="hold"):
-        scancode.press_chord([0x41], hold=hold)
+        scancode.press_chord(keys(0x41), hold=hold)
     assert sent.events == []
-
-
-def test_unmappable_key_in_chord_sends_nothing(sent):
-    with pytest.raises(ValueError, match="no scan code"):
-        scancode.press_chord([0x11, 0x99])
-    assert sent.events == []
-
-
-def test_blocked_send_input_raises(sent, monkeypatch):
-    monkeypatch.setattr(scancode.uia, "SendInput", lambda *inputs: 0)
-    with pytest.raises(OSError, match="blocked"):
-        scancode.press_chord([0x41])
 
 
 @pytest.mark.parametrize(
     ("name", "vk"), [("Left", 0x25), ("ENTER", 0x0D), ("ctrl", 0x11), ("A", 0x41), ("a", 0x41)]
 )
-def test_vk_for_name(sent, name, vk):
-    assert scancode.vk_for_name(name) == vk
+def test_vk_for_name(user32, name, vk):
+    assert scancode.vk_for_name(name, US) == vk
 
 
-def test_vk_for_unknown_name(sent):
+def test_vk_for_unknown_name(user32):
     with pytest.raises(ValueError, match="Unknown key"):
-        scancode.vk_for_name("NotAKey")
+        scancode.vk_for_name("NotAKey", US)
 
 
 # Desktop.shortcut / Desktop.type routing
@@ -227,6 +329,8 @@ def test_vk_for_unknown_name(sent):
 
 def _desktop(monkeypatch, owner):
     monkeypatch.setattr(service, "get_controller", lambda: owner)
+    monkeypatch.setattr(scancode, "foreground_layout", lambda: US)
+    monkeypatch.setattr(scancode, "layout_at", lambda x, y: US)
     send_keys = MagicMock()
     monkeypatch.setattr(service.uia, "SendKeys", send_keys)
     return Desktop.__new__(Desktop), send_keys
@@ -281,6 +385,7 @@ def test_type_scancode_types_keys_and_presses_enter(sent, owner, monkeypatch):
 
 def test_type_scancode_rejects_untypable_text_before_clicking(sent, owner, monkeypatch):
     desktop, _ = _desktop(monkeypatch, owner)
+    monkeypatch.setattr(desktop, "_validate_screen_point", lambda x, y: None, raising=False)
     click = MagicMock()
     monkeypatch.setattr(service.uia, "Click", click)
 
@@ -290,8 +395,6 @@ def test_type_scancode_rejects_untypable_text_before_clicking(sent, owner, monke
 
 
 def test_shortcut_tool_passes_scancode_and_hold():
-    import asyncio
-
     from windows_mcp.tools.input import register
 
     tools: dict = {}

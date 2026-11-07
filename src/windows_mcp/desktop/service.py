@@ -15,6 +15,7 @@ from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree, _excluded_process_names, _window_process_name
 from windows_mcp.desktop import screenshot as screenshot_capture
 from windows_mcp.desktop.control import get_controller
+from windows_mcp.desktop import scancode as scancode_input
 from windows_mcp.desktop import flash_overlay
 from windows_mcp.infrastructure import safe_get
 from windows_mcp.desktop import control_overlay
@@ -83,6 +84,21 @@ _SENDKEYS_SYNTAX_CHARS = set("{}()")
 _HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 
 
+def _shortcut_keys(shortcut: str) -> list[str]:
+    """Split "ctrl+shift+comma" style input into key names, natural names resolved.
+
+    Raises ValueError for empty parts (e.g. "ctrl++"; use "plus") so nothing is
+    pressed.
+    """
+    parts = [part.strip() for part in shortcut.split("+")]
+    if not shortcut.strip() or any(not part for part in parts):
+        raise ValueError(
+            f"Invalid shortcut {shortcut!r}: empty key name. "
+            'Use names such as "plus", "comma", "minus" for punctuation keys.'
+        )
+    return [_KEY_ALIASES.get(key.lower(), key) for key in parts]
+
+
 def _shortcut_to_sendkeys(shortcut: str) -> str:
     """Translate "ctrl+shift+comma" style input into a SendKeys string.
 
@@ -92,15 +108,8 @@ def _shortcut_to_sendkeys(shortcut: str) -> str:
     pressed. Unknown multi-character names are rejected by SendKeys itself before
     any input is sent.
     """
-    parts = [part.strip() for part in shortcut.split("+")]
-    if not shortcut.strip() or any(not part for part in parts):
-        raise ValueError(
-            f"Invalid shortcut {shortcut!r}: empty key name. "
-            'Use names such as "plus", "comma", "minus" for punctuation keys.'
-        )
     sendkeys_str = ""
-    for key in parts:
-        name = _KEY_ALIASES.get(key.lower(), key)
+    for name in _shortcut_keys(shortcut):
         if len(name) == 1:
             sendkeys_str += "{" + name + "}" if name in _SENDKEYS_SYNTAX_CHARS else name
         else:
@@ -833,28 +842,40 @@ class Desktop:
         caret_position: Literal["start", "idle", "end"] = "idle",
         clear: bool | str = False,
         press_enter: bool | str = False,
+        scancode: bool = False,
     ) -> str:
         """Click a field, optionally empty it, type the text and report what landed.
 
         Returns a short note for the tool's answer: how the field was cleared and
-        what it reads back, when the focused element exposes its text.
+        what it reads back, when the focused element exposes its text. With
+        scancode, keys go out as hardware scan codes (for games); clearing still
+        uses virtual keys.
         """
         clear = as_bool(clear, "clear")
         press_enter = as_bool(press_enter, "press_enter")
+        if scancode:
+            for ch in text:
+                if ch != "\r":
+                    scancode_input.char_keys(ch)  # Reject untypable text before clicking.
         owner = get_controller()
         owner.checkpoint_current()
         x, y = loc
         self._validate_screen_point(x, y)
         uia.Click(x, y)
         owner.record_step_current()
+
+        def press(key: str) -> None:
+            if scancode:
+                scancode_input.press_chord([scancode_input.vk_for_name(key)])
+                return
+            owner.checkpoint_current()
+            uia.SendKeys("{" + key + "}", waitTime=0.05)
+            owner.record_step_current()
+
         if caret_position == "start":
-            owner.checkpoint_current()
-            uia.SendKeys("{Home}", waitTime=0.05)
-            owner.record_step_current()
+            press("Home")
         elif caret_position == "end":
-            owner.checkpoint_current()
-            uia.SendKeys("{End}", waitTime=0.05)
-            owner.record_step_current()
+            press("End")
         notes: list[str] = []
         target = None
         if clear:
@@ -864,7 +885,9 @@ class Desktop:
         # Per-key SendKeys for short text (so escape sequences keep working);
         # clipboard paste for long text (so the scan-code queue can't race).
         has_control_chars = any(c in text for c in ("\n", "\t", "{", "}"))
-        if len(text) >= self._LONG_TEXT_PASTE_THRESHOLD and not has_control_chars:
+        if scancode:
+            scancode_input.type_text(text)  # Games don't paste; every key is a checkpoint.
+        elif len(text) >= self._LONG_TEXT_PASTE_THRESHOLD and not has_control_chars:
             self._paste_text(text)
         else:
             # Bump interval from 0.02 → 0.04. Keeps short-text speed acceptable
@@ -876,9 +899,7 @@ class Desktop:
         if clear or text:
             notes.append(self._read_back(target, text, clear, has_control_chars))
         if press_enter:
-            owner.checkpoint_current()
-            uia.SendKeys("{Enter}", waitTime=0.05)
-            owner.record_step_current()
+            press("Enter")
         return " ".join(note for note in notes if note)
 
     # Win32 Edit styles (WinUser.h) used to tell multi-line and password fields apart.
@@ -1225,7 +1246,14 @@ class Desktop:
             owner.record_step_current()
             sleep(0.003)
 
-    def shortcut(self, shortcut: str):
+    def shortcut(self, shortcut: str, scancode: bool = False, hold: float | None = None):
+        """Press a key chord; scancode sends hardware scan codes and allows a hold in seconds."""
+        if scancode:
+            vks = [scancode_input.vk_for_name(name) for name in _shortcut_keys(shortcut)]
+            scancode_input.press_chord(vks, hold or 0.0)
+            return
+        if hold is not None:
+            raise ValueError("hold requires scancode=True")
         sendkeys_str = _shortcut_to_sendkeys(shortcut)
         owner = get_controller()
         owner.checkpoint_current()

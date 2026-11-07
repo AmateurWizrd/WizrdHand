@@ -203,7 +203,11 @@ def test_type_tool_rejects_a_non_boolean_flag_before_calling_the_desktop() -> No
 def test_type_tool_passes_parsed_booleans_through() -> None:
     fake = FakeDesktop()
 
-    asyncio.run(_tools(fake)["Type"](text="EF", loc=[100, 100], clear="true", press_enter="false"))
+    asyncio.run(
+        _tools(fake)["Type"](
+            text="EF", loc=[100, 100], clear="true", press_enter="false", scancode="true"
+        )
+    )
 
     assert fake.type_calls == [
         {
@@ -212,5 +216,6 @@ def test_type_tool_passes_parsed_booleans_through() -> None:
             "caret_position": "idle",
             "clear": True,
             "press_enter": False,
+            "scancode": True,
         }
     ]

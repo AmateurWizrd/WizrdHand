@@ -261,7 +261,7 @@ def register(
 
     @mcp.tool(
         name="Type",
-        description="Types text at specified coordinates [x, y] or passing a UI element's label/id. Set clear=True to clear existing text first (Home, Shift+End, Backspace; never Ctrl+A, which many apps treat as 'mark every record'), False to append. The answer says how the field was cleared and what it reads back when the field exposes its text, and warns when focus moved away while typing (e.g. a message box took the keystrokes). Set press_enter=True to submit after typing. Set caret_position to 'start' (beginning), 'end' (end), or 'idle' (default). Provide either loc or label. clear and press_enter accept only true or false. An empty text types nothing, so combine it with clear=True to just empty a field.",
+        description="Types text at specified coordinates [x, y] or passing a UI element's label/id. Set clear=True to clear existing text first (Home, Shift+End, Backspace; never Ctrl+A, which many apps treat as 'mark every record'), False to append. The answer says how the field was cleared and what it reads back when the field exposes its text, and warns when focus moved away while typing (e.g. a message box took the keystrokes). Set press_enter=True to submit after typing. Set caret_position to 'start' (beginning), 'end' (end), or 'idle' (default). Provide either loc or label. clear and press_enter accept only true or false. An empty text types nothing, so combine it with clear=True to just empty a field. Set scancode=True to send each key as a hardware scan code (holding Shift where the keyboard layout needs it) for games and other apps that read DirectInput or raw input and ignore normal typed text; text the keyboard layout cannot type is rejected before anything is clicked.",
         annotations=ToolAnnotations(
             title="Type",
             readOnlyHint=False,
@@ -278,12 +278,14 @@ def register(
         clear: bool | str = False,
         caret_position: Literal["start", "idle", "end"] = "idle",
         press_enter: bool | str = False,
+        scancode: bool | str = False,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
         loc = _as_loc(loc)
         clear = _as_bool(clear, "clear")
         press_enter = _as_bool(press_enter, "press_enter")
+        scancode = _as_bool(scancode, "scancode")
         if loc is None and label is None:
             raise ValueError("Either loc or label must be provided.")
         if label is not None:
@@ -297,6 +299,7 @@ def register(
             caret_position=caret_position,
             clear=clear,
             press_enter=press_enter,
+            scancode=scancode,
         )
         result = f"Typed {text} at ({x},{y})."
         return f"{result} {note}" if isinstance(note, str) and note else result
@@ -412,7 +415,7 @@ def register(
 
     @mcp.tool(
         name="Shortcut",
-        description='Executes keyboard shortcuts using key combinations separated by +. Examples: "ctrl+c" (copy), "ctrl+v" (paste), "alt+tab" (switch apps), "win+r" (Run dialog), "win" (Start menu), "ctrl+shift+esc" (Task Manager). Use for quick actions and system commands.',
+        description='Executes keyboard shortcuts using key combinations separated by +. Examples: "ctrl+c" (copy), "ctrl+v" (paste), "alt+tab" (switch apps), "win+r" (Run dialog), "win" (Start menu), "ctrl+shift+esc" (Task Manager). Use for quick actions and system commands. Set scancode=True to send hardware scan codes, which games reading DirectInput or raw input need; with scancode=True, hold (seconds, 0-10) keeps the keys down that long before releasing them, e.g. shortcut="right", scancode=True, hold=0.5 walks right for half a second.',
         annotations=ToolAnnotations(
             title="Shortcut",
             readOnlyHint=False,
@@ -422,9 +425,19 @@ def register(
         ),
     )
     @with_analytics(get_analytics(), "Shortcut-Tool")
-    def shortcut_tool(shortcut: str, ctx: Context = None):
-        get_desktop().shortcut(shortcut)
-        return f"Pressed {shortcut}."
+    def shortcut_tool(
+        shortcut: str,
+        scancode: bool | str = False,
+        hold: float | None = None,
+        ctx: Context = None,
+    ):
+        scancode = _as_bool(scancode, "scancode")
+        if hold is not None:
+            _validate_finite_number(hold, "hold")
+        get_desktop().shortcut(shortcut, scancode=scancode, hold=hold)
+        if hold:
+            return f"Pressed {shortcut} as scan codes and held it for {hold:g} seconds."
+        return f"Pressed {shortcut} as scan codes." if scancode else f"Pressed {shortcut}."
 
     @mcp.tool(
         name="Wait",

@@ -76,5 +76,5 @@ def test_cursor_is_sampled_after_desktop_and_tree_collection(
             cursor_pos=expected,
             grid_lines=None,
             capture_rect=Rect(*region) if region else None,
-            window=None,
+            screenshot=None,
         )

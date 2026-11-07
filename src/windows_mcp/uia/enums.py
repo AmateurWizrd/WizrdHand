@@ -1071,6 +1071,11 @@ class KeyboardEventFlag(IntEnum):
     KeyScanCode = 0x0008
 
 
+# dwExtraInfo on every key this server injects, so a low-level keyboard hook can
+# tell the server's keys from other programs' injected keys ("WMCP").
+INJECTED_EXTRA_INFO = 0x574D4350
+
+
 class InputType(IntEnum):
     """InputType from Win32"""
 

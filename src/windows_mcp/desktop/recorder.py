@@ -1,14 +1,17 @@
 """Background recording of one window: JPEG frames through WGC plus a key-event log.
 
-Frames are full-size client-area JPEGs named by seconds since the start
-(``0012.345.jpg``). ``events.jsonl`` gets one line per key event from the
-coordinator's keyboard hook: the user's physical keys (``"user"``), keys the AI
-injected during a tool call (``"agent"``) and keys other programs injected
-(``"injected"``). Only one recording runs at a time.
+Frames are full-size client-area JPEGs in ``frames/``, named by seconds since the
+start (``frames/0012.345.jpg``). ``events.jsonl`` gets one line per key event
+(``"kind": "key"``) from the coordinator's keyboard hook. The hook is global: it
+logs keys typed into every window, not only the recorded one. ``source`` is
+``"user"`` for physical keys, ``"agent"`` for keys this server injected (tagged
+through dwExtraInfo) and ``"injected"`` for keys other programs injected. Taking
+over the desktop does not stop a recording. Only one recording runs at a time.
 """
 
 import atexit
 import collections
+import io
 import json
 import math
 import tempfile
@@ -57,58 +60,85 @@ class Recording:
         self._started = time.monotonic()
         self._ended: float | None = None
         self._owner = get_controller()
+        self._log_full = False
+        (directory / "frames").mkdir(exist_ok=True)
         self._owner.key_observers.append(self._on_key)
         self._thread = threading.Thread(target=self._run, name="window-recorder", daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:
+            self._unregister()
+            raise
 
     def _on_key(self, vk: int, scan: int, down: bool, source: str) -> None:
         self._keys.append((time.monotonic(), vk, scan, down, source))  # Hook thread: no I/O.
 
+    def _unregister(self) -> None:
+        try:
+            self._owner.key_observers.remove(self._on_key)
+        except ValueError:
+            pass  # Already removed.
+
     def _write_keys(self, log) -> None:
-        while self._keys:
+        while self._keys and not self._log_full:
             stamp, vk, scan, down, source = self._keys.popleft()
-            event = {"t": round(stamp - self._started, 4), "source": source, "vk": vk}
-            log.write(json.dumps(event | {"scan": scan, "down": down}) + "\n")
+            event = {"kind": "key", "t": round(stamp - self._started, 4), "source": source}
+            line = json.dumps(event | {"vk": vk, "scan": scan, "down": down}) + "\n"
+            size = len(line.encode("utf-8"))
+            if self.bytes + size > MAX_BYTES:
+                self._log_full = True
+                return
+            log.write(line)
+            self.bytes += size
             self.key_events += 1
 
     def _run(self) -> None:
         try:
-            with open(self.directory / "events.jsonl", "a", encoding="utf-8") as log:
+            log_path = self.directory / "events.jsonl"
+            with open(log_path, "a", encoding="utf-8", newline="\n") as log:
                 try:
                     self._capture(log)
                 finally:
-                    self._owner.key_observers.remove(self._on_key)
+                    self._unregister()
                     self._write_keys(log)
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             self.stopped_by = self.stopped_by or "error"
         finally:
+            self._unregister()  # Also when the log could not even be opened.
             self._ended = time.monotonic()
 
     def _capture(self, log) -> None:
+        deadline = self._started + self.seconds
+        last_index = math.ceil(self.seconds * self.fps)
         index = 0
         while True:
-            due = index / self.fps
-            if due >= self.seconds:
-                self.stopped_by = "duration"
-                return
-            if self._stop.wait(max(0.0, self._started + due - time.monotonic())):
+            if self._stop.wait(max(0.0, self._started + index / self.fps - time.monotonic())):
                 self.stopped_by = "stop"
+                return
+            if index >= last_index or time.monotonic() >= deadline:
+                self.stopped_by = "duration"
                 return
             image, self.client_rect = self._grab(self.hwnd)
             elapsed = time.monotonic() - self._started
-            path = self.directory / f"{elapsed:08.3f}.jpg"
-            image.save(path, "JPEG", quality=JPEG_QUALITY)
-            self.size = image.size
-            self.frames += 1
-            self.bytes += path.stat().st_size
-            self._write_keys(log)
-            if self.bytes >= MAX_BYTES:
+            encoded = io.BytesIO()
+            image.save(encoded, "JPEG", quality=JPEG_QUALITY)
+            data = encoded.getvalue()
+            if self.bytes + len(data) > MAX_BYTES:
                 self.stopped_by = "size limit"
                 return
-            # A slow grab skips the frames it missed instead of bunching them up.
-            next_index = max(index + 1, math.floor(elapsed * self.fps) + 1)
-            next_index = min(next_index, math.ceil(self.seconds * self.fps))
+            (self.directory / "frames" / f"{elapsed:08.3f}.jpg").write_bytes(data)
+            self.size = image.size
+            self.frames += 1
+            self.bytes += len(data)
+            self._write_keys(log)
+            if self._log_full:
+                self.stopped_by = "size limit"
+                return
+            # Schedule after all per-frame work: a slow frame skips the frames it
+            # missed instead of bunching them up.
+            done = time.monotonic() - self._started
+            next_index = min(max(index + 1, math.floor(done * self.fps) + 1), last_index)
             self.dropped += next_index - index - 1
             index = next_index
 
@@ -124,6 +154,7 @@ class Recording:
         end = self._ended if self._ended is not None else time.monotonic()
         return {
             "directory": str(self.directory),
+            "frames_directory": str(self.directory / "frames"),
             "window": self.hwnd,
             "running": self.running,
             "elapsed_seconds": round(end - self._started, 3),

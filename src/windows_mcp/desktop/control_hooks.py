@@ -13,6 +13,7 @@ from windows_mcp.desktop.control_win32 import (
     _read_raw_mouse,
     _user32,
 )
+from windows_mcp.uia.enums import INJECTED_EXTRA_INFO
 
 
 def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
@@ -65,8 +66,12 @@ def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
 
 def _observe_key(owner: Any, data: _KeyHookData, down: bool, injected: bool) -> None:
     """Tell recorders about a key event; an observer fault never fails the hook open."""
-    # Injected keys are the AI's while one of its tool calls runs; otherwise another program's.
-    source = "user" if not injected else "agent" if owner._active_calls else "injected"
+    if not injected:
+        source = "user"
+    elif data.dwExtraInfo == INJECTED_EXTRA_INFO:  # Set on every key this server sends.
+        source = "agent"
+    else:
+        source = "injected"
     for observer in tuple(owner.key_observers):
         try:
             observer(int(data.vkCode), int(data.scanCode), down, source)

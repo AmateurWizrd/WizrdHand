@@ -101,7 +101,7 @@
     },
     {
       "name": "Record",
-      "description": "Records one window in the background through Windows Graphics Capture: full-size client-area JPEG frames named by seconds since the start, plus events.jsonl of key events marked user, agent or injected. mode='start' needs window_handle or window_title and returns the directory at once; mode='status' and mode='stop' check on or end it. fps defaults to 15, seconds to 10."
+      "description": "Records one window in the background through Windows Graphics Capture: full-size client-area JPEG frames in <directory>/frames named by seconds since the start, plus <directory>/events.jsonl of key events (kind, t, source, vk, scan, down) marked user, agent or injected. The key log is global: it logs keys typed into every window while the recording runs, and taking over the desktop does not stop it. mode='start' needs window_handle or window_title and returns the directory at once; mode='status' and mode='stop' check on or end it. fps defaults to 15, seconds to 10."
     },
     {
       "name": "Snapshot",

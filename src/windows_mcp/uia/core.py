@@ -299,9 +299,9 @@ def AbsoluteMouseEvent(buttonFlag: int, x: int, y: int) -> None:
     )
 
 
-def keybd_event(bVk: int, bScan: int, dwFlags: int, dwExtraInfo: int) -> None:
-    """keybd_event from Win32."""
-    ctypes.windll.user32.keybd_event(bVk, bScan, dwFlags, dwExtraInfo)
+def keybd_event(bVk: int, bScan: int, dwFlags: int, dwExtraInfo: int = 0) -> None:
+    """keybd_event from Win32; a zero dwExtraInfo is replaced by this server's marker."""
+    ctypes.windll.user32.keybd_event(bVk, bScan, dwFlags, dwExtraInfo or INJECTED_EXTRA_INFO)
 
 
 def PostMessage(handle: int, msg: int, wParam: int, lParam: int) -> bool:
@@ -1415,8 +1415,9 @@ def MouseInput(
 def KeyboardInput(
     wVk: int, wScan: int, dwFlags: int = KeyboardEventFlag.KeyDown, time_: int = 0
 ) -> INPUT:
-    """Create Win32 struct `KEYBDINPUT` for `SendInput`."""
-    return _CreateInput(KEYBDINPUT(wVk, wScan, dwFlags, time_, None))
+    """Create Win32 struct `KEYBDINPUT` for `SendInput`, tagged with this server's marker."""
+    marker = ctypes.cast(INJECTED_EXTRA_INFO, ctypes.wintypes.PULONG)
+    return _CreateInput(KEYBDINPUT(wVk, wScan, dwFlags, time_, marker))
 
 
 def HardwareInput(uMsg: int, param: int = 0) -> INPUT:

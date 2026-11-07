@@ -294,7 +294,8 @@ class Desktop:
 
         # Desktop queries and UI tree traversal can be slow. Sample the cursor
         # afterwards to keep the metadata and annotation close to capture time.
-        cursor_position = self.get_cursor_location()
+        raw_cursor = self.get_cursor_location()
+        cursor_position = raw_cursor
         if screenshot_region and not self._point_in_region(cursor_position, screenshot_region):
             cursor_position = None
 
@@ -305,6 +306,15 @@ class Desktop:
         screenshot_original_size = None
         applied_scale = None
         if use_vision:
+            window_image = None
+            if window is not None:
+                # Use the client rect the capture was cut from: the window may have
+                # moved or resized while the desktop state was collected.
+                window_image, capture_rect = self.get_window_screenshot(window)
+                screenshot_region = self._rect_to_bounding_box(capture_rect)
+                cursor_position = (
+                    raw_cursor if self._point_in_region(raw_cursor, screenshot_region) else None
+                )
             if use_annotation:
                 nodes = tree_state.interactive_nodes
                 screenshot = self.get_annotated_screenshot(
@@ -312,12 +322,12 @@ class Desktop:
                     cursor_pos=cursor_position,
                     grid_lines=grid_lines,
                     capture_rect=capture_rect,
-                    window=window,
+                    screenshot=window_image,
                 )
             else:
                 screenshot = (
-                    self.get_window_screenshot(window, capture_rect)
-                    if window is not None
+                    window_image
+                    if window_image is not None
                     else self.get_screenshot(capture_rect=capture_rect)
                 )
 
@@ -1695,24 +1705,27 @@ class Desktop:
         flash_overlay.show_capture_flash(capture_rect)
         return image
 
-    def get_window_screenshot(self, window: int, capture_rect: uia.Rect) -> Image.Image:
-        """The window's client area through WGC, else a screen crop of capture_rect.
+    def get_window_screenshot(self, window: int) -> tuple[Image.Image, uia.Rect]:
+        """The window's client area and the screen rect it was cut from.
 
-        WGC reads the window's own surface, so no overlay needs hiding and no flash
-        is drawn; the screen crop shows whatever covers the window.
+        Uses WGC, else a screen crop of the client area as it is now. WGC reads the
+        window's own surface, so no overlay needs hiding and no flash is drawn; the
+        screen crop shows whatever covers the window.
         """
         try:
-            image, _ = window_capture.capture(window)
+            image, (left, top, width, height) = window_capture.capture(window)
             self._last_screenshot_backend = "wgc"
-            return image
         except Exception as exc:
             logger.info("WGC capture of window %s failed: %s", window, exc)
-            image = self.get_screenshot(capture_rect=capture_rect)
+            left, top, width, height = window_capture.client_rect(window)
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Window {window} is minimized or has no client area") from exc
+            image = self.get_screenshot(capture_rect=uia.Rect(left, top, left + width, top + height))
             self._last_screenshot_backend = (
                 f"{self._last_screenshot_backend} screen crop (WGC failed: {exc}; "
                 "windows covering this one show in the image)"
             )
-            return image
+        return image, uia.Rect(left, top, left + width, top + height)
 
     def get_annotated_screenshot(
         self,
@@ -1720,13 +1733,11 @@ class Desktop:
         cursor_pos: tuple[int, int] | None = None,
         grid_lines: tuple[int, int] | None = None,
         capture_rect: uia.Rect | None = None,
-        window: int | None = None,
+        screenshot: Image.Image | None = None,
     ) -> Image.Image:
-        screenshot = (
-            self.get_window_screenshot(window, capture_rect)
-            if window is not None
-            else self.get_screenshot(capture_rect=capture_rect)
-        )
+        """Annotate a fresh capture of capture_rect, or screenshot if it was already taken."""
+        if screenshot is None:
+            screenshot = self.get_screenshot(capture_rect=capture_rect)
         annotated_screenshot = screenshot.copy()
         draw = ImageDraw.Draw(annotated_screenshot)
         image_width, image_height = annotated_screenshot.size

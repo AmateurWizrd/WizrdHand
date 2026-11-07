@@ -14,6 +14,7 @@ from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState, Sema
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree, _excluded_process_names, _window_process_name
 from windows_mcp.desktop import screenshot as screenshot_capture
+from windows_mcp.desktop import window_capture
 from windows_mcp.desktop.control import get_controller
 from windows_mcp.desktop import flash_overlay
 from windows_mcp.infrastructure import safe_get
@@ -150,6 +151,7 @@ class Desktop:
         display_indices: list[int] | None = None,
         region: list[int] | tuple[int, ...] | None = None,
         max_image_size: Size | None = None,
+        window: int | None = None,
     ) -> DesktopState:
         use_annotation = use_annotation is True or (
             isinstance(use_annotation, str) and use_annotation.lower() == "true"
@@ -178,14 +180,23 @@ class Desktop:
         state_build_ms = 0.0
         displays = self.get_displays()
         available_displays = [self._display_to_view(display) for display in displays]
-        region_rect = self.parse_region_selection(region)
-        capture_rect = (
-            region_rect
-            if region_rect is not None
-            else (
-                self.get_display_union_rect(display_indices, displays) if display_indices else None
+        if window is not None:
+            # The window's client area replaces region/display; WGC sees it even when covered.
+            left, top, width, height = window_capture.client_rect(window)
+            if uia.IsIconic(window) or width <= 0 or height <= 0:
+                raise ValueError(f"Window {window} is minimized or has no client area")
+            capture_rect = uia.Rect(left, top, left + width, top + height)
+        else:
+            region_rect = self.parse_region_selection(region)
+            capture_rect = (
+                region_rect
+                if region_rect is not None
+                else (
+                    self.get_display_union_rect(display_indices, displays)
+                    if display_indices
+                    else None
+                )
             )
-        )
         screenshot_region = self._rect_to_bounding_box(capture_rect) if capture_rect else None
 
         # Fast path for Screenshot tool (use_ui_tree=False): skip window enumeration.
@@ -292,9 +303,14 @@ class Desktop:
                     cursor_pos=cursor_position,
                     grid_lines=grid_lines,
                     capture_rect=capture_rect,
+                    window=window,
                 )
             else:
-                screenshot = self.get_screenshot(capture_rect=capture_rect)
+                screenshot = (
+                    self.get_window_screenshot(window, capture_rect)
+                    if window is not None
+                    else self.get_screenshot(capture_rect=capture_rect)
+                )
 
             screenshot_original_size = Size(width=screenshot.width, height=screenshot.height)
 
@@ -1647,14 +1663,38 @@ class Desktop:
         flash_overlay.show_capture_flash(capture_rect)
         return image
 
+    def get_window_screenshot(self, window: int, capture_rect: uia.Rect) -> Image.Image:
+        """The window's client area through WGC, else a screen crop of capture_rect.
+
+        WGC reads the window's own surface, so no overlay needs hiding and no flash
+        is drawn; the screen crop shows whatever covers the window.
+        """
+        try:
+            image, _ = window_capture.capture(window)
+            self._last_screenshot_backend = "wgc"
+            return image
+        except Exception as exc:
+            logger.info("WGC capture of window %s failed: %s", window, exc)
+            image = self.get_screenshot(capture_rect=capture_rect)
+            self._last_screenshot_backend = (
+                f"{self._last_screenshot_backend} screen crop (WGC failed: {exc}; "
+                "windows covering this one show in the image)"
+            )
+            return image
+
     def get_annotated_screenshot(
         self,
         nodes: list[TreeElementNode],
         cursor_pos: tuple[int, int] | None = None,
         grid_lines: tuple[int, int] | None = None,
         capture_rect: uia.Rect | None = None,
+        window: int | None = None,
     ) -> Image.Image:
-        screenshot = self.get_screenshot(capture_rect=capture_rect)
+        screenshot = (
+            self.get_window_screenshot(window, capture_rect)
+            if window is not None
+            else self.get_screenshot(capture_rect=capture_rect)
+        )
         annotated_screenshot = screenshot.copy()
         draw = ImageDraw.Draw(annotated_screenshot)
         image_width, image_height = annotated_screenshot.size

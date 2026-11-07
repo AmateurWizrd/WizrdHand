@@ -57,6 +57,7 @@ EXPECTED_TOOLS = {
     "PowerShell",
     "Process",
     "Registry",
+    "Record",
     "Scrape",
     "Screenshot",
     "Scroll",

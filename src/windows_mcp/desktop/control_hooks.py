@@ -63,6 +63,17 @@ def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
     return result
 
 
+def _observe_key(owner: Any, data: _KeyHookData, down: bool, injected: bool) -> None:
+    """Tell recorders about a key event; an observer fault never fails the hook open."""
+    # Injected keys are the AI's while one of its tool calls runs; otherwise another program's.
+    source = "user" if not injected else "agent" if owner._active_calls else "injected"
+    for observer in tuple(owner.key_observers):
+        try:
+            observer(int(data.vkCode), int(data.scanCode), down, source)
+        except Exception:
+            pass
+
+
 def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
     """Track each physical key independently and honor the takeover chord."""
     if code < 0:
@@ -72,7 +83,10 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
     mode_switch = False
     try:
         data = ctypes.cast(lparam, ctypes.POINTER(_KeyHookData)).contents
-        if data.flags & 0x10:  # LLKHF_INJECTED: AI SendInput stays usable.
+        injected = bool(data.flags & 0x10)  # LLKHF_INJECTED
+        if owner.key_observers:
+            _observe_key(owner, data, wparam in (0x100, 0x104), injected)
+        if injected:  # AI SendInput stays usable.
             return _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
         owner._last_physical_event = time.monotonic()
         vk = int(data.vkCode)

@@ -100,6 +100,10 @@
       "description": "Captures a fast screenshot-first desktop snapshot with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports display=[0] or display=[0,1] using zero-based active Windows display indices. Note: the returned image may be downscaled for efficiency; when it is, multiply image coordinates by the ratio of original size to displayed size to get the actual screen coordinates for mouse actions (Click, Move, etc.)."
     },
     {
+      "name": "Record",
+      "description": "Records one window in the background through Windows Graphics Capture: full-size client-area JPEG frames named by seconds since the start, plus events.jsonl of key events marked user, agent or injected. mode='start' needs window_handle or window_title and returns the directory at once; mode='status' and mode='stop' check on or end it. fps defaults to 15, seconds to 10."
+    },
+    {
       "name": "Snapshot",
       "description": "Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Use this when you need interactive element ids, scrollable regions, or browser DOM extraction with use_dom=True. Set use_vision=True to include screenshot. Set display=[0] or display=[0,1] using zero-based active Windows display indices; omit it to keep the default full-desktop behavior."
     },

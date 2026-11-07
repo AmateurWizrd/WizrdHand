@@ -13,6 +13,7 @@ OTHER = frozenset(
         "Registry",
         "Snapshot",
         "Screenshot",
+        "Record",
         "Scrape",
         "Wait",
         "WaitFor",

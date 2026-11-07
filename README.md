@@ -22,6 +22,18 @@
 
 </div>
 
+## WizrdHand
+
+*A wizard's hand beats a mage hand.*
+
+WizrdHand is a fork of [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) by CursorTouch, under the same MIT license. Upstream notes that Windows-MCP can't play video games: games read hardware scan codes, so they ignore virtual-key input, and a screen grab misses a game window that something else covers. WizrdHand adds:
+
+- Scan-code input: `Type` and `Shortcut` take `scancode=true` to send keys through `SendInput` as hardware scan codes, which DirectInput and raw-input games read. `Shortcut` also takes `hold` (seconds, up to 10) to keep the keys down, for example to walk. Every key down goes through the desktop control ledger, so a user takeover still releases held keys.
+- Window capture: `Screenshot` and `Snapshot` take `window_handle` and/or `window_title` to capture that window's client area through Windows Graphics Capture, even when it is covered or on another monitor. The response gives the client area's screen origin and size so image pixels map to `Click` coordinates. Install the `wgc` extra (`windows-mcp[wgc]`) for it; without it the image is a screen crop and the response says so.
+- A `Record` tool: it records one window in the background (15 fps by default) into JPEG frames plus an `events.jsonl` of user and agent key events, with `status` and `stop` modes.
+
+Each addition is offered upstream to Windows-MCP as its own pull request. Everything below is the upstream README.
+
 **Windows-MCP** is a lightweight, open-source project that enables seamless integration between AI agents and the Windows operating system. Acting as an MCP server bridges the gap between LLMs and the Windows operating system, allowing agents to perform tasks such as **file navigation, application control, UI interaction, QA testing,** and more.
 
 mcp-name: io.github.CursorTouch/Windows-MCP

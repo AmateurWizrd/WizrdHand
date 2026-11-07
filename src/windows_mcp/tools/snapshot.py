@@ -28,12 +28,13 @@ _WINDOW_DOC = (
     " or on another monitor; this replaces region and display, and the response gives the"
     " client area's screen origin and size so image pixels map to Click coordinates. If"
     " Windows Graphics Capture fails, the Screenshot Backend line says so and the image is a"
-    " screen crop of the client area."
+    " screen crop of the client area. When several visible windows share window_title, the"
+    " largest one that is not minimized is captured and the others' handles are listed."
 )
 
 
-def _window(handle: int | None, title: str | None) -> int | None:
-    return None if handle is None and not title else resolve_window(handle, title)
+def _window(handle: int | None, title: str | None) -> tuple[int | None, list[int]]:
+    return (None, []) if handle is None and not title else resolve_window(handle, title)
 
 
 def register(mcp, *, get_desktop, get_analytics):
@@ -66,6 +67,7 @@ def register(mcp, *, get_desktop, get_analytics):
         ctx: Context = None,
     ):
         try:
+            window, window_others = _window(window_handle, window_title)
             capture_result = capture_desktop_state(
                 get_desktop(),
                 use_vision=_as_bool(use_vision, "use_vision") or bool(save_path),
@@ -77,7 +79,8 @@ def register(mcp, *, get_desktop, get_analytics):
                 display=_as_int_list(display, "display"),
                 region=_as_region(region),
                 tool_name="Snapshot tool",
-                window=_window(window_handle, window_title),
+                window=window,
+                window_others=window_others,
             )
         except Exception as e:
             logger.warning(
@@ -126,6 +129,7 @@ def register(mcp, *, get_desktop, get_analytics):
         ctx: Context = None,
     ):
         try:
+            window, window_others = _window(window_handle, window_title)
             capture_result = capture_desktop_state(
                 get_desktop(),
                 use_vision=True,
@@ -137,7 +141,8 @@ def register(mcp, *, get_desktop, get_analytics):
                 display=_as_int_list(display, "display"),
                 region=_as_region(region),
                 tool_name="Screenshot tool",
-                window=_window(window_handle, window_title),
+                window=window,
+                window_others=window_others,
             )
         except Exception as e:
             logger.warning(

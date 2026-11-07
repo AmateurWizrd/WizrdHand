@@ -29,10 +29,16 @@ MAX_SESSIONS = 4
 Rect = tuple[int, int, int, int]  # left, top, width, height in screen pixels
 
 
-def resolve_window(handle: int | None = None, title: str | None = None) -> int:
-    """The top-level window given by handle and/or exact title."""
+def resolve_window(handle: int | None = None, title: str | None = None) -> tuple[int, list[int]]:
+    """The top-level window given by handle and/or exact title, and other windows so titled.
+
+    When several visible windows share the title (a dialog, a tool window), the
+    largest one that is not minimized wins; the rest are returned so the caller can
+    name them.
+    """
     if handle is None and not title:
         raise ValueError("Give window_handle or window_title")
+    others: list[int] = []
     if title:
         matches: list[int] = []
 
@@ -42,15 +48,27 @@ def resolve_window(handle: int | None = None, title: str | None = None) -> int:
             return True
 
         win32gui.EnumWindows(collect, None)
-        visible = [hwnd for hwnd in matches if win32gui.IsWindowVisible(hwnd)]
         if not matches:
             raise ValueError(f"No top-level window is titled exactly {title!r}")
         if handle is not None and handle not in matches:
             raise ValueError(f"Window {handle} is not titled {title!r}")
-        handle = handle if handle is not None else (visible or matches)[0]
+        visible = [hwnd for hwnd in matches if win32gui.IsWindowVisible(hwnd)]
+        if handle is None:
+            candidates = visible or matches
+            handle = max(candidates, key=_pick_rank)
+            others = [hwnd for hwnd in candidates if hwnd != handle]
     if isinstance(handle, bool) or not isinstance(handle, int) or not win32gui.IsWindow(handle):
         raise ValueError(f"{handle!r} is not a window handle")
-    return handle
+    return handle, others
+
+
+def _pick_rank(hwnd: int) -> tuple[bool, int]:
+    """Not minimized first, then the larger client area."""
+    try:
+        _, _, width, height = win32gui.GetClientRect(hwnd)
+    except Exception:
+        width = height = 0
+    return not win32gui.IsIconic(hwnd), width * height
 
 
 def client_rect(hwnd: int) -> Rect:
@@ -167,13 +185,16 @@ def session(hwnd: int) -> WindowCapture:
         if current is not None and not current.closed:
             current.last_used = time.monotonic()
             return current
-        _sessions.pop(hwnd, None)
-        evicted = []
-        while len(_sessions) >= MAX_SESSIONS:
-            oldest = min(_sessions, key=lambda key: _sessions[key].last_used)
-            evicted.append(_sessions.pop(oldest))
+        stale = _sessions.get(hwnd)  # Closed; the reaper drops it if the restart fails.
+        # Start the replacement before evicting anything: if it fails, every
+        # session stays reachable by the reaper and close_all.
         created = WindowCapture(hwnd)
         _sessions[hwnd] = created
+        evicted = [stale] if stale is not None else []
+        while len(_sessions) > MAX_SESSIONS:
+            others = [key for key in _sessions if key != hwnd]
+            oldest = min(others, key=lambda key: _sessions[key].last_used)
+            evicted.append(_sessions.pop(oldest))
         if _reaper is None:
             _reaper = threading.Thread(target=_reap_idle, name="wgc-reaper", daemon=True)
             _reaper.start()

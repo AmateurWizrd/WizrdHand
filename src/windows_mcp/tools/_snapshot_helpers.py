@@ -58,6 +58,7 @@ def capture_desktop_state(
     region: list[int] | None,
     tool_name: str,
     window: int | None = None,
+    window_others: list[int] | None = None,
 ):
     profile_enabled = _snapshot_profile_enabled()
     profile_started_at = time.perf_counter()
@@ -137,6 +138,7 @@ def capture_desktop_state(
         "screenshot_bytes": screenshot_bytes,
         "use_ui_tree": use_ui_tree,
         "window": window,
+        "window_others": window_others or [],
     }
 
 
@@ -217,6 +219,12 @@ def build_snapshot_response(
                 f"is screen point ({box.left} + px, {box.top} + py) before any coordinate "
                 "scale above\n"
             )
+            if capture_result.get("window_others"):
+                handles = ", ".join(str(hwnd) for hwnd in capture_result["window_others"])
+                metadata_text += (
+                    "Other windows with the same title (pass window_handle to pick one): "
+                    f"{handles}\n"
+                )
         if include_ui_details and capture_result["use_ui_tree"]:
             metadata_text += (
                 "UI Tree Scope: Region-filtered. Windows and UI elements outside this region "

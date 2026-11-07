@@ -1476,7 +1476,10 @@ class Desktop:
                     if window_pattern is None:
                         continue
 
-                    if window_pattern.CanMinimize and window_pattern.CanMaximize:
+                    # Either box marks an app window. Fixed-size windows (most games, some
+                    # launchers) have a minimize box but no maximize box; requiring both
+                    # hid them from Snapshot, App switch and resize.
+                    if window_pattern.CanMinimize or window_pattern.CanMaximize:
                         status = self.get_window_status(child)
 
                         bounding_rect = child.BoundingRectangle

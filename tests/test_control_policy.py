@@ -29,6 +29,7 @@ from windows_mcp.tools.control_policy import CLASSIFIED_TOOLS, MODES, requires_c
             "Registry",
             "Snapshot",
             "Screenshot",
+            "Record",
             "Scrape",
             "Wait",
             "WaitFor",

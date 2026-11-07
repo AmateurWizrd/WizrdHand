@@ -86,6 +86,8 @@ class ControlCoordinator:
         self._raw_distance = 0.0
         self._raw_device: int | None = None
         self._listeners: list[Callable[[dict], None]] = []
+        # Called from the keyboard hook with (vk, scan, down, source); must only enqueue.
+        self.key_observers: list[Callable[[int, int, bool, str], None]] = []
         self.input_ledger = InputLedger()
         self._health_probe: Callable[[], bool] | None = None
         self._begin_notification = threading.local()

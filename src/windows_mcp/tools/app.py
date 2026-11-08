@@ -8,6 +8,7 @@ from typing import Literal
 from mcp.types import ToolAnnotations
 from windows_mcp.desktop.utils import as_int_list as _as_int_list
 from windows_mcp.infrastructure import with_analytics
+from windows_mcp.desktop.window_capture import resolve_window
 from fastmcp import Context
 
 
@@ -76,7 +77,11 @@ def register(mcp, *, get_desktop, get_analytics):
             "application, window, foreground, focus, resize. Four modes: 'launch' (opens an application "
             "by Start Menu name), 'launch_executable' (strictly launches one executable path with separated "
             "argv and optional cwd), 'resize' (adjusts a named or active window), and 'switch' (brings a "
-            "specific window into focus). Prefer background execution when supported. If launching an application is known to take focus or disrupt the user, obtain permission first, reusing existing authorization. Relaxed policy does not gate launch modes; this guidance is not server-enforced approval."
+            "specific window into focus). For 'switch', window_handle (an HWND) and/or window_title "
+            "(exact title; if several visible windows share it, the largest one that is not "
+            "minimized wins and the others are listed) pick the window exactly instead of the "
+            "fuzzy name; a minimized window is restored, and the call fails if the window did not "
+            "become the foreground window. Prefer background execution when supported. If launching an application is known to take focus or disrupt the user, obtain permission first, reusing existing authorization. Relaxed policy does not gate launch modes; this guidance is not server-enforced approval."
         ),
         annotations=ToolAnnotations(
             title="App",
@@ -95,11 +100,16 @@ def register(mcp, *, get_desktop, get_analytics):
         executable: str | None = None,
         args: list[str] | str | None = None,
         cwd: str | None = None,
+        window_handle: int | None = None,
+        window_title: str | None = None,
         ctx: Context = None,
     ):
         exact_launch_inputs = (executable, args, cwd)
         if mode != "launch_executable" and any(value is not None for value in exact_launch_inputs):
             raise ValueError('executable, args, and cwd require mode="launch_executable"')
+        by_window = window_handle is not None or bool(window_title)
+        if by_window and mode != "switch":
+            raise ValueError('window_handle and window_title require mode="switch"')
 
         if mode == "launch_executable":
             if executable is None:
@@ -110,6 +120,16 @@ def register(mcp, *, get_desktop, get_analytics):
                     'mode="launch_executable"'
                 )
             return _launch_executable(executable, args, cwd)
+
+        if by_window:
+            if name is not None:
+                raise ValueError("Give name or window_handle/window_title, not both")
+            hwnd, others = resolve_window(window_handle, window_title)
+            response = get_desktop().switch_window(hwnd)
+            if others:
+                listed = ", ".join(str(other) for other in others)
+                response += f" Other windows with the same title (pass window_handle): {listed}."
+            return response
 
         window_loc = _as_int_list(window_loc, "window_loc")
         window_size = _as_int_list(window_size, "window_size")

@@ -648,27 +648,32 @@ class Desktop:
             window, error = self._find_window_by_name(name)
             if window is None:
                 return error, 1
-
-            target_handle = window.handle
-
-            was_minimized = uia.IsIconic(target_handle)
-            self.bring_window_to_top(target_handle)
-            # Windows can deny activation without raising; verify the foreground HWND.
-            deadline = perf_counter() + 1.0
-            while win32gui.GetForegroundWindow() != target_handle:
-                if perf_counter() >= deadline:
-                    return (
-                        f"Failed to bring {window.name} to the foreground within 1 second.",
-                        1,
-                    )
-                sleep(0.05)
-            if was_minimized:
-                content = f"Restored {window.name.title()} from minimized and switched to it."
-            else:
-                content = f"Switched to {window.name.title()} window."
-            return content, 0
+            return self._switch_to(window.handle, window.name)
         except Exception as e:
             return (f"Error switching app: {str(e)}", 1)
+
+    def switch_window(self, handle: int) -> str:
+        """Bring one window (by HWND) to the foreground; raises if it did not get there."""
+        try:
+            response, status = self._switch_to(handle, win32gui.GetWindowText(handle) or str(handle))
+        except Exception as e:
+            response, status = f"Error switching app: {str(e)}", 1
+        if status != 0:
+            raise ValueError(response)
+        return response
+
+    def _switch_to(self, target_handle: int, name: str) -> tuple[str, int]:
+        was_minimized = uia.IsIconic(target_handle)
+        self.bring_window_to_top(target_handle)  # Restores, then AttachThreadInput focus.
+        # Windows can deny activation without raising; verify the foreground HWND.
+        deadline = perf_counter() + 1.0
+        while win32gui.GetForegroundWindow() != target_handle:
+            if perf_counter() >= deadline:
+                return (f"Failed to bring {name} to the foreground within 1 second.", 1)
+            sleep(0.05)
+        if was_minimized:
+            return f"Restored {name.title()} from minimized and switched to it.", 0
+        return f"Switched to {name.title()} window.", 0
 
     def bring_window_to_top(self, target_handle: int):
         if not win32gui.IsWindow(target_handle):

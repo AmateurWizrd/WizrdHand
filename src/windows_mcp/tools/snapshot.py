@@ -164,7 +164,7 @@ def register(mcp, *, get_desktop, get_analytics):
             capture_result,
             include_ui_details=False,
             saved_path=saved_path,
-            ui_detail_note="UI Tree: Skipped for fast screenshot-only capture. Call Snapshot when you need interactive or scrollable elements.",
+            ui_detail_note="UI Tree: Skipped for fast screenshot-only capture. The focused window and the window list below are skipped too, so they read as empty. Call Snapshot when you need interactive or scrollable elements or the open windows.",
         )
 
     state_tool = _state_tool
